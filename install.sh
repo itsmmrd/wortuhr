@@ -46,13 +46,10 @@ ENV_FILE="$APP_DIR/.env"
 existing_token=""
 existing_key=""
 existing_model=""
-existing_open="0"
 if [[ -f "$ENV_FILE" ]]; then
   existing_token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
   existing_key="$(grep -E '^GROQ_API_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
   existing_model="$(grep -E '^GROQ_MODEL=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-  existing_open="$(grep -E '^OPEN_SIGNUP=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-  existing_open="${existing_open:-0}"
 fi
 
 cat <<'EOF'
@@ -116,16 +113,12 @@ if [[ -z "$GROQ_MODEL" || "$GROQ_MODEL" == *" "* ]]; then
 fi
 
 echo
-echo "Allow anyone who finds the bot to spend your Groq key?"
-echo "Leave this as no if the bot is only for you. The first /start becomes the owner."
-if [[ "$existing_open" == "1" ]]; then
-  read -rp "Open signup? Currently yes [y/N]: " OPEN_ANSWER
-else
-  read -rp "Open signup? [y/N]: " OPEN_ANSWER
-fi
+echo "Other Telegram accounts can use this bot. Each person keeps their own plans."
+echo "They share this server's Groq key. Type n if the bot should stay private."
+read -rp "Let other people use the bot? [Y/n]: " OPEN_ANSWER
 case "${OPEN_ANSWER:-}" in
-  y|Y|yes|YES) OPEN_SIGNUP="1" ;;
-  *) OPEN_SIGNUP="0" ;;
+  n|N|no|NO) OPEN_SIGNUP="0" ;;
+  *) OPEN_SIGNUP="1" ;;
 esac
 
 export GROQ_MODEL OPEN_SIGNUP

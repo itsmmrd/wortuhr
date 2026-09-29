@@ -34,7 +34,7 @@ sudo ./install.sh
 
 The installer asks for the Telegram token and the Groq API key, checks both, and runs the bot as a systemd service from `/opt/wortuhr`.
 
-Leave **Open signup** as no if the bot is only for you. The first person who sends `/start` becomes the owner. Other accounts are refused, so they cannot spend your Groq key.
+Other Telegram accounts can use the bot. Each person has their own plans, and they share the Groq key on the server. Type `n` at the installer prompt if the bot should stay private to the first account that sends `/start`.
 
 On a later run, press Enter to keep the saved keys. The database of plans and cards is kept.
 
