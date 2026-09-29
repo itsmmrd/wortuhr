@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 
-import httpx
-
 from bot import config
 from bot.constants import LEVEL_GUIDE
+from bot.groq_http import GroqHTTPError, error_message, post_json
 
 logger = logging.getLogger(__name__)
 
@@ -156,26 +156,31 @@ async def _chat(messages: list[dict[str, str]], *, json_mode: bool) -> str:
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    headers = {
-        "Authorization": f"Bearer {config.GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post(
+    try:
+        status, text = await asyncio.to_thread(
+            post_json,
             f"{config.GROQ_BASE_URL}/chat/completions",
-            headers=headers,
-            json=body,
+            config.GROQ_API_KEY,
+            body,
         )
-    if response.status_code == 400 and json_mode:
+    except GroqHTTPError as exc:
+        raise LLMError(exc.message) from exc
+    if status == 400 and json_mode:
         return await _chat(messages, json_mode=False)
-    if response.status_code == 401:
+    if status == 401:
         raise LLMError("Groq rejected the API key. Update it with sudo ./install.sh and restart the bot.")
-    if response.status_code == 429:
+    if status == 429:
         raise LLMError("Groq is rate-limiting requests. I will try again shortly.")
-    if response.status_code >= 400:
-        logger.warning("Groq error %s: %s", response.status_code, response.text[:500])
+    if status >= 400:
+        logger.warning("Groq error %s: %s", status, text[:500])
+        if status == 403:
+            raise LLMError(error_message(status, text))
         raise LLMError("Groq could not write this card. I will try again shortly.")
-    payload = response.json()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        logger.warning("Groq returned non-JSON: %s", text[:500])
+        raise LLMError("Groq returned an unreadable card. I will try again shortly.") from exc
     try:
         return str(payload["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:

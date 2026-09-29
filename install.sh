@@ -130,8 +130,14 @@ import sys
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, "/opt/wortuhr")
+from bot.groq_http import verify_key
+
 token = os.environ["TELEGRAM_BOT_TOKEN"]
-request = urllib.request.Request(f"https://api.telegram.org/bot{token}/getMe")
+request = urllib.request.Request(
+    f"https://api.telegram.org/bot{token}/getMe",
+    headers={"User-Agent": "Wortuhr/1.0"},
+)
 try:
     with urllib.request.urlopen(request, timeout=25) as response:
         payload = json.load(response)
@@ -143,21 +149,9 @@ if not payload.get("ok"):
     sys.exit("Telegram rejected the bot token.")
 print(payload.get("result", {}).get("username", ""))
 
-groq_key = os.environ["GROQ_API_KEY"]
-groq_request = urllib.request.Request(
-    "https://api.groq.com/openai/v1/models",
-    headers={"Authorization": f"Bearer {groq_key}"},
-)
-try:
-    with urllib.request.urlopen(groq_request, timeout=25) as response:
-        if response.status != 200:
-            sys.exit(f"Groq returned status {response.status}.")
-except urllib.error.HTTPError as exc:
-    if exc.code == 401:
-        sys.exit("Groq rejected the API key.")
-    sys.exit(f"Groq check failed ({exc.code}).")
-except Exception as exc:
-    sys.exit(f"Could not reach Groq: {exc}")
+problem = verify_key(os.environ["GROQ_API_KEY"], os.environ["GROQ_MODEL"])
+if problem:
+    sys.exit(problem)
 PY
 )"
 
