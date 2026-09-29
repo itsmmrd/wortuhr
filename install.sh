@@ -102,42 +102,14 @@ export TELEGRAM_BOT_TOKEN GROQ_API_KEY SAVED_GROQ_MODEL="$existing_model"
 
 echo
 echo "Checking the Telegram token and the Groq API key..."
-CHECK_RESULT="$(python3 - <<'PY'
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-
-sys.path.insert(0, "/opt/wortuhr")
-from bot.groq_http import GroqHTTPError, choose_chat_model
-
-token = os.environ["TELEGRAM_BOT_TOKEN"]
-request = urllib.request.Request(
-    f"https://api.telegram.org/bot{token}/getMe",
-    headers={"User-Agent": "Wortuhr/1.0"},
+RESULT_FILE="$(mktemp)"
+(
+  cd "$APP_DIR"
+  python3 -m bot.install_choose "$RESULT_FILE"
 )
-try:
-    with urllib.request.urlopen(request, timeout=25) as response:
-        payload = json.load(response)
-except urllib.error.HTTPError as exc:
-    sys.exit(f"Telegram rejected the bot token ({exc.code}).")
-except Exception as exc:
-    sys.exit(f"Could not reach Telegram: {exc}")
-if not payload.get("ok"):
-    sys.exit("Telegram rejected the bot token.")
-
-try:
-    model = choose_chat_model(os.environ["GROQ_API_KEY"], os.environ.get("SAVED_GROQ_MODEL", ""))
-except GroqHTTPError as exc:
-    sys.exit(exc.message)
-
-print(payload.get("result", {}).get("username", ""))
-print(model)
-PY
-)"
-BOT_USERNAME="$(printf '%s\n' "$CHECK_RESULT" | sed -n '1p')"
-GROQ_MODEL="$(printf '%s\n' "$CHECK_RESULT" | sed -n '2p')"
+BOT_USERNAME="$(sed -n '1p' "$RESULT_FILE")"
+GROQ_MODEL="$(sed -n '2p' "$RESULT_FILE")"
+rm -f "$RESULT_FILE"
 if [[ -z "$GROQ_MODEL" || "$GROQ_MODEL" == *" "* ]]; then
   echo "No Groq model was selected."
   exit 1

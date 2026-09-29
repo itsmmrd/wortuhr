@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from typing import TextIO
 
 
 class GroqHTTPError(Exception):
@@ -86,42 +88,48 @@ def list_chat_models(api_key: str, base_url: str = "https://api.groq.com/openai/
     return models
 
 
+def read_model_choice(
+    models: list[str],
+    saved: str = "",
+    reader: TextIO | None = None,
+    writer: TextIO | None = None,
+) -> str:
+    if not models:
+        raise GroqHTTPError("Groq returned no chat models for this key.")
+    source = reader or sys.stdin
+    output = writer or sys.stdout
+    default_index = preferred_model_index(models, saved.strip())
+    output.write("\nGroq accepted the API key. Choose a chat model:\n\n")
+    for number, model_id in enumerate(models, start=1):
+        note = ""
+        if saved and model_id == saved:
+            note = "  (saved)"
+        elif number == default_index + 1:
+            note = "  (suggested)"
+        output.write(f"  {number:2}. {model_id}{note}\n")
+    while True:
+        output.write(f"\nModel number [{default_index + 1}]: ")
+        output.flush()
+        answer = source.readline()
+        if not answer:
+            raise GroqHTTPError("No model selected.")
+        answer = answer.strip()
+        if not answer:
+            return models[default_index]
+        if answer.isdigit() and 1 <= int(answer) <= len(models):
+            return models[int(answer) - 1]
+        output.write("Enter a number from the list.\n")
+
+
 def choose_chat_model(api_key: str, saved: str = "", base_url: str = "https://api.groq.com/openai/v1") -> str:
     models = list_chat_models(api_key, base_url)
-    try:
-        tty = open("/dev/tty", "r+", encoding="utf-8")
-    except OSError as exc:
-        raise GroqHTTPError("Run the installer in a terminal so you can choose a model.") from exc
-    default_index = preferred_model_index(models, saved.strip())
-    with tty:
-        tty.write("\nGroq accepted the API key. Choose a chat model:\n\n")
-        for number, model_id in enumerate(models, start=1):
-            note = ""
-            if saved and model_id == saved:
-                note = "  (saved)"
-            elif number == default_index + 1:
-                note = "  (suggested)"
-            tty.write(f"  {number:2}. {model_id}{note}\n")
-        while True:
-            tty.write(f"\nModel number [{default_index + 1}]: ")
-            tty.flush()
-            answer = tty.readline()
-            if not answer:
-                raise GroqHTTPError("No model selected.")
-            answer = answer.strip()
-            if not answer:
-                chosen = models[default_index]
-            elif answer.isdigit() and 1 <= int(answer) <= len(models):
-                chosen = models[int(answer) - 1]
-            else:
-                tty.write("Enter a number from the list.\n")
-                continue
-            problem = verify_key(api_key, chosen, base_url)
-            if problem:
-                tty.write(f"\n{problem}\nPick another model.\n")
-                continue
-            tty.write(f"Using {chosen}\n")
+    while True:
+        chosen = read_model_choice(models, saved)
+        problem = verify_key(api_key, chosen, base_url)
+        if problem is None:
+            print(f"Using {chosen}", flush=True)
             return chosen
+        print(f"\n{problem}\nPick another model.", flush=True)
 
 
 def post_json(url: str, api_key: str, payload: dict, *, timeout: int = 50) -> tuple[int, str]:

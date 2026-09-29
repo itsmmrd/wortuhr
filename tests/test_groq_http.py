@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import io
 import unittest
 
-from bot.groq_http import chat_model_ids, error_message, preferred_model_index
+from bot.groq_http import chat_model_ids, error_message, preferred_model_index, read_model_choice
 
 
 class GroqErrorTests(unittest.TestCase):
@@ -42,6 +43,14 @@ class ModelListTests(unittest.TestCase):
     def test_suggests_a_larger_chat_model(self) -> None:
         models = ["llama-3.1-8b-instant", "meta-llama/llama-3.3-70b", "openai/gpt-oss-20b"]
         self.assertEqual(preferred_model_index(models, ""), 1)
+
+    def test_enter_keeps_the_suggested_model(self) -> None:
+        models = ["llama-3.1-8b-instant", "openai/gpt-oss-20b"]
+        output = io.StringIO()
+        chosen = read_model_choice(models, "", io.StringIO("\n"), output)
+        self.assertEqual(chosen, "llama-3.1-8b-instant")
+        self.assertIn("1. llama-3.1-8b-instant  (suggested)", output.getvalue())
+        self.assertIn("2. openai/gpt-oss-20b", output.getvalue())
 
 
 if __name__ == "__main__":
