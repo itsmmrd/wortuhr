@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from bot.groq_http import error_message
+from bot.groq_http import chat_model_ids, error_message, preferred_model_index
 
 
 class GroqErrorTests(unittest.TestCase):
@@ -17,6 +17,31 @@ class GroqErrorTests(unittest.TestCase):
         message = error_message(403, "<html>cloudflare</html>")
         self.assertIn("403", message)
         self.assertNotIn("cloudflare", message)
+
+
+class ModelListTests(unittest.TestCase):
+    def test_keeps_chat_models_and_skips_audio(self) -> None:
+        payload = {
+            "data": [
+                {"id": "whisper-large-v3", "active": True},
+                {"id": "llama-3.1-8b-instant", "active": True},
+                {"id": "old-model", "active": False},
+                {"id": "openai/gpt-oss-20b", "active": True},
+                {"id": "canopylabs/orpheus-v1", "active": True},
+            ]
+        }
+        self.assertEqual(
+            chat_model_ids(payload),
+            ["llama-3.1-8b-instant", "openai/gpt-oss-20b"],
+        )
+
+    def test_prefers_the_saved_model(self) -> None:
+        models = ["llama-3.1-8b-instant", "openai/gpt-oss-20b"]
+        self.assertEqual(preferred_model_index(models, "openai/gpt-oss-20b"), 1)
+
+    def test_suggests_a_larger_chat_model(self) -> None:
+        models = ["llama-3.1-8b-instant", "meta-llama/llama-3.3-70b", "openai/gpt-oss-20b"]
+        self.assertEqual(preferred_model_index(models, ""), 1)
 
 
 if __name__ == "__main__":

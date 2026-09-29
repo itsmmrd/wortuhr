@@ -22,7 +22,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "").strip()
 GROQ_BASE_URL = os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
 OPEN_SIGNUP = os.environ.get("OPEN_SIGNUP", "0").strip().lower() in {"1", "true", "yes", "on"}
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "data"))

@@ -69,7 +69,7 @@ sudo ./install.sh
 
 Cards and plans are stored in `/opt/wortuhr/data/wortuhr.db`. Copy that file if you want a backup.
 
-The default Groq model is `llama-3.3-70b-versatile` on the free tier. You can choose another model id while installing, or edit `GROQ_MODEL` in `/opt/wortuhr/.env` and restart the service.
+During install, Wortuhr asks Groq which chat models your key can use, then you pick one by number. Run `sudo ./install.sh` again to switch models.
 
 ## Run it locally
 

@@ -45,14 +45,13 @@ fi
 ENV_FILE="$APP_DIR/.env"
 existing_token=""
 existing_key=""
-existing_model="llama-3.3-70b-versatile"
+existing_model=""
 existing_open="0"
 if [[ -f "$ENV_FILE" ]]; then
   existing_token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
   existing_key="$(grep -E '^GROQ_API_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
   existing_model="$(grep -E '^GROQ_MODEL=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
   existing_open="$(grep -E '^OPEN_SIGNUP=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
-  existing_model="${existing_model:-llama-3.3-70b-versatile}"
   existing_open="${existing_open:-0}"
 fi
 
@@ -99,10 +98,48 @@ if [[ "$GROQ_API_KEY" == *$'\n'* || "$GROQ_API_KEY" == *'"'* ]]; then
   exit 1
 fi
 
-read -rp "Groq model [${existing_model}]: " GROQ_MODEL
-GROQ_MODEL="${GROQ_MODEL:-$existing_model}"
+export TELEGRAM_BOT_TOKEN GROQ_API_KEY SAVED_GROQ_MODEL="$existing_model"
+
+echo
+echo "Checking the Telegram token and the Groq API key..."
+CHECK_RESULT="$(python3 - <<'PY'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, "/opt/wortuhr")
+from bot.groq_http import GroqHTTPError, choose_chat_model
+
+token = os.environ["TELEGRAM_BOT_TOKEN"]
+request = urllib.request.Request(
+    f"https://api.telegram.org/bot{token}/getMe",
+    headers={"User-Agent": "Wortuhr/1.0"},
+)
+try:
+    with urllib.request.urlopen(request, timeout=25) as response:
+        payload = json.load(response)
+except urllib.error.HTTPError as exc:
+    sys.exit(f"Telegram rejected the bot token ({exc.code}).")
+except Exception as exc:
+    sys.exit(f"Could not reach Telegram: {exc}")
+if not payload.get("ok"):
+    sys.exit("Telegram rejected the bot token.")
+
+try:
+    model = choose_chat_model(os.environ["GROQ_API_KEY"], os.environ.get("SAVED_GROQ_MODEL", ""))
+except GroqHTTPError as exc:
+    sys.exit(exc.message)
+
+print(payload.get("result", {}).get("username", ""))
+print(model)
+PY
+)"
+BOT_USERNAME="$(printf '%s\n' "$CHECK_RESULT" | sed -n '1p')"
+GROQ_MODEL="$(printf '%s\n' "$CHECK_RESULT" | sed -n '2p')"
 if [[ -z "$GROQ_MODEL" || "$GROQ_MODEL" == *" "* ]]; then
-  echo "The model id cannot be empty or contain spaces."
+  echo "No Groq model was selected."
   exit 1
 fi
 
@@ -119,44 +156,10 @@ case "${OPEN_ANSWER:-}" in
   *) OPEN_SIGNUP="0" ;;
 esac
 
-export TELEGRAM_BOT_TOKEN GROQ_API_KEY GROQ_MODEL OPEN_SIGNUP
-
-echo
-echo "Checking the Telegram token and the Groq API key..."
-BOT_USERNAME="$(python3 - <<'PY'
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-
-sys.path.insert(0, "/opt/wortuhr")
-from bot.groq_http import verify_key
-
-token = os.environ["TELEGRAM_BOT_TOKEN"]
-request = urllib.request.Request(
-    f"https://api.telegram.org/bot{token}/getMe",
-    headers={"User-Agent": "Wortuhr/1.0"},
-)
-try:
-    with urllib.request.urlopen(request, timeout=25) as response:
-        payload = json.load(response)
-except urllib.error.HTTPError as exc:
-    sys.exit(f"Telegram rejected the bot token ({exc.code}).")
-except Exception as exc:
-    sys.exit(f"Could not reach Telegram: {exc}")
-if not payload.get("ok"):
-    sys.exit("Telegram rejected the bot token.")
-print(payload.get("result", {}).get("username", ""))
-
-problem = verify_key(os.environ["GROQ_API_KEY"], os.environ["GROQ_MODEL"])
-if problem:
-    sys.exit(problem)
-PY
-)"
+export GROQ_MODEL OPEN_SIGNUP
 
 echo "Telegram bot @${BOT_USERNAME} accepted the token."
-echo "Groq accepted the API key."
+echo "Groq model: ${GROQ_MODEL}"
 
 umask 077
 python3 - <<'PY'

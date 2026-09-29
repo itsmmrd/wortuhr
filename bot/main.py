@@ -70,8 +70,8 @@ def main() -> None:
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    if not config.TELEGRAM_BOT_TOKEN or not config.GROQ_API_KEY:
-        sys.exit("Set TELEGRAM_BOT_TOKEN and GROQ_API_KEY in the environment or in .env.")
+    if not config.TELEGRAM_BOT_TOKEN or not config.GROQ_API_KEY or not config.GROQ_MODEL:
+        sys.exit("Set TELEGRAM_BOT_TOKEN, GROQ_API_KEY, and GROQ_MODEL in the environment or in .env.")
     application = (
         Application.builder()
         .token(config.TELEGRAM_BOT_TOKEN)

@@ -38,33 +38,128 @@ def error_message(status: int, body: str) -> str:
     return f"Groq check failed ({status})."
 
 
+_NON_CHAT = ("whisper", "orpheus", "tts", "prompt-guard", "playai", "llama-guard", "safeguard")
+
+
+def chat_model_ids(payload: dict) -> list[str]:
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return []
+    found: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("active") is False:
+            continue
+        model_id = str(row.get("id") or "").strip()
+        folded = model_id.casefold()
+        if not model_id or any(part in folded for part in _NON_CHAT):
+            continue
+        found.append(model_id)
+    return sorted(set(found), key=str.casefold)
+
+
+def preferred_model_index(models: list[str], saved: str = "") -> int:
+    if saved and saved in models:
+        return models.index(saved)
+    folded = [model_id.casefold() for model_id in models]
+    for hint in ("70b", "versatile", "8b-instant", "gpt-oss-120b", "gpt-oss-20b"):
+        for index, model_id in enumerate(folded):
+            if hint in model_id:
+                return index
+    return 0
+
+
+def list_chat_models(api_key: str, base_url: str = "https://api.groq.com/openai/v1") -> list[str]:
+    status, body = request(f"{base_url.rstrip('/')}/models", api_key, method="GET", timeout=30)
+    if status == 401:
+        raise GroqHTTPError("Groq rejected the API key.")
+    if status != 200:
+        raise GroqHTTPError(error_message(status, body))
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise GroqHTTPError("Groq returned an unreadable model list.") from exc
+    if not isinstance(payload, dict):
+        raise GroqHTTPError("Groq returned an unreadable model list.")
+    models = chat_model_ids(payload)
+    if not models:
+        raise GroqHTTPError("Groq returned no chat models for this key.")
+    return models
+
+
+def choose_chat_model(api_key: str, saved: str = "", base_url: str = "https://api.groq.com/openai/v1") -> str:
+    models = list_chat_models(api_key, base_url)
+    try:
+        tty = open("/dev/tty", "r+", encoding="utf-8")
+    except OSError as exc:
+        raise GroqHTTPError("Run the installer in a terminal so you can choose a model.") from exc
+    default_index = preferred_model_index(models, saved.strip())
+    with tty:
+        tty.write("\nGroq accepted the API key. Choose a chat model:\n\n")
+        for number, model_id in enumerate(models, start=1):
+            note = ""
+            if saved and model_id == saved:
+                note = "  (saved)"
+            elif number == default_index + 1:
+                note = "  (suggested)"
+            tty.write(f"  {number:2}. {model_id}{note}\n")
+        while True:
+            tty.write(f"\nModel number [{default_index + 1}]: ")
+            tty.flush()
+            answer = tty.readline()
+            if not answer:
+                raise GroqHTTPError("No model selected.")
+            answer = answer.strip()
+            if not answer:
+                chosen = models[default_index]
+            elif answer.isdigit() and 1 <= int(answer) <= len(models):
+                chosen = models[int(answer) - 1]
+            else:
+                tty.write("Enter a number from the list.\n")
+                continue
+            problem = verify_key(api_key, chosen, base_url)
+            if problem:
+                tty.write(f"\n{problem}\nPick another model.\n")
+                continue
+            tty.write(f"Using {chosen}\n")
+            return chosen
+
+
 def post_json(url: str, api_key: str, payload: dict, *, timeout: int = 50) -> tuple[int, str]:
+    return request(url, api_key, method="POST", payload=payload, timeout=timeout)
+
+
+def request(
+    url: str,
+    api_key: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    timeout: int = 50,
+) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         body_path = directory / "body.json"
         config_path = directory / "curl.cfg"
         output_path = directory / "out"
-        body_path.write_text(json.dumps(payload), encoding="utf-8")
-        config_path.write_text(
-            "\n".join(
-                [
-                    "silent",
-                    "show-error",
-                    'request = "POST"',
-                    f"url = {_quote(url)}",
-                    f"header = {_quote('Authorization: Bearer ' + api_key)}",
-                    'header = "Content-Type: application/json"',
-                    'header = "User-Agent: Wortuhr/1.0"',
-                    f"data = {_quote('@' + str(body_path))}",
-                    f"output = {_quote(str(output_path))}",
-                    'connect-timeout = "20"',
-                    f"max-time = {_quote(str(timeout))}",
-                    'write-out = "%{http_code}"',
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
+        lines = [
+            "silent",
+            "show-error",
+            f"url = {_quote(url)}",
+            f"header = {_quote('Authorization: Bearer ' + api_key)}",
+            'header = "Accept: application/json"',
+            'header = "User-Agent: Wortuhr/1.0"',
+            f"output = {_quote(str(output_path))}",
+            'connect-timeout = "20"',
+            f"max-time = {_quote(str(timeout))}",
+            'write-out = "%{http_code}"',
+        ]
+        if method != "GET":
+            lines.insert(2, f"request = {_quote(method)}")
+        if payload is not None:
+            body_path.write_text(json.dumps(payload), encoding="utf-8")
+            lines.append('header = "Content-Type: application/json"')
+            lines.append(f"data = {_quote('@' + str(body_path))}")
+        config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         config_path.chmod(0o600)
         try:
             completed = subprocess.run(
