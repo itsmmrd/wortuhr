@@ -8,14 +8,16 @@ import re
 from bot import config
 from bot.constants import LEVEL_GUIDE
 from bot.groq_http import GroqHTTPError, error_message, post_json
+from bot.i18n import t
 
 logger = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
-    def __init__(self, user_message: str) -> None:
+    def __init__(self, user_message: str, code: str = "") -> None:
         super().__init__(user_message)
         self.user_message = user_message
+        self.code = code
 
 
 def load_json_object(text: str) -> dict:
@@ -147,7 +149,7 @@ Return JSON with exactly 3 different real-life situations where a person would u
 }"""
 
 
-async def _chat(messages: list[dict[str, str]], *, json_mode: bool) -> str:
+async def _chat(messages: list[dict[str, str]], *, json_mode: bool, ui_language: str = "en") -> str:
     body: dict = {
         "model": config.GROQ_MODEL,
         "temperature": 0.7,
@@ -166,26 +168,26 @@ async def _chat(messages: list[dict[str, str]], *, json_mode: bool) -> str:
     except GroqHTTPError as exc:
         raise LLMError(exc.message) from exc
     if status == 400 and json_mode:
-        return await _chat(messages, json_mode=False)
+        return await _chat(messages, json_mode=False, ui_language=ui_language)
     if status == 401:
-        raise LLMError("Groq rejected the API key. Update it with sudo ./install.sh and restart the bot.")
+        raise LLMError(t(ui_language, "err_key"), code="api_key")
     if status == 429:
-        raise LLMError("Groq is rate-limiting requests. I will try again shortly.")
+        raise LLMError(t(ui_language, "err_rate"))
     if status >= 400:
         logger.warning("Groq error %s: %s", status, text[:500])
         if status == 403:
             raise LLMError(error_message(status, text))
-        raise LLMError("Groq could not write this card. I will try again shortly.")
+        raise LLMError(t(ui_language, "err_write"))
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         logger.warning("Groq returned non-JSON: %s", text[:500])
-        raise LLMError("Groq returned an unreadable card. I will try again shortly.") from exc
+        raise LLMError(t(ui_language, "err_unreadable")) from exc
     try:
         return str(payload["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:
         logger.warning("Unexpected Groq payload: %s", str(payload)[:500])
-        raise LLMError("Groq returned an unreadable card. I will try again shortly.") from exc
+        raise LLMError(t(ui_language, "err_unreadable")) from exc
 
 
 async def generate_card(
@@ -196,6 +198,7 @@ async def generate_card(
     topic: str,
     translation_language: str,
     avoid: list[str],
+    ui_language: str = "en",
 ) -> dict:
     messages = [
         {
@@ -220,7 +223,7 @@ async def generate_card(
     seen = list(avoid)
     last_error: Exception | None = None
     for _attempt in range(3):
-        raw = await _chat(messages, json_mode=True)
+        raw = await _chat(messages, json_mode=True, ui_language=ui_language)
         try:
             card = parse_card(content_type, raw)
         except (ValueError, json.JSONDecodeError) as exc:
@@ -247,10 +250,10 @@ async def generate_card(
             continue
         return card
     logger.warning("Giving up on Groq card after retries: %s", last_error)
-    raise LLMError("I could not prepare a fresh card just now. I will try again shortly.")
+    raise LLMError(t(ui_language, "err_fresh"))
 
 
-async def summarize_learned(items: list[dict], translation_language: str) -> str:
+async def summarize_learned(items: list[dict], translation_language: str, ui_language: str = "en") -> str:
     lines = []
     for item in items[:30]:
         kind = "idiom" if item["content_type"] == "idiom" else "word"
@@ -272,7 +275,7 @@ async def summarize_learned(items: list[dict], translation_language: str) -> str
             ),
         },
     ]
-    text = (await _chat(messages, json_mode=False)).strip()
+    text = (await _chat(messages, json_mode=False, ui_language=ui_language)).strip()
     if not text:
-        raise LLMError("I could not write a summary just now.")
+        raise LLMError(t(ui_language, "summary_fail"))
     return text[:3500]

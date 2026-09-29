@@ -11,6 +11,7 @@ from telegram.error import Forbidden
 
 from bot import llm
 from bot.db import Database, Plan, User, db
+from bot.i18n import language_label, normalize_ui, t, topic_label
 from bot.keyboards import lesson as lesson_keyboard
 from bot.render import lesson_html, schedule_label
 
@@ -53,6 +54,7 @@ async def create_item(
             topic=topic,
             translation_language=user.translation_language,
             avoid=avoid,
+            ui_language=normalize_ui(user.ui_language),
         )
         payload = _payload(card, content_type)
         item = database.add_item(
@@ -67,7 +69,15 @@ async def create_item(
             payload_json=json.dumps(payload, ensure_ascii=False),
             local_day=local_day,
         )
-    footer = f"Plan: {language} · {level} · {topic} · {schedule_label(plan)}"
+    ui = normalize_ui(user.ui_language)
+    footer = t(
+        ui,
+        "plan_footer",
+        language=language_label(ui, language),
+        level=level,
+        topic=topic_label(ui, topic),
+        schedule=schedule_label(plan, ui),
+    )
     text = lesson_html(
         language=language,
         level=level,
@@ -77,16 +87,17 @@ async def create_item(
         translation=card["translation"],
         payload=payload,
         footer=footer,
+        lang=ui,
     )
     return item.id, text
 
 
-async def send_card(bot, chat_id: int, item_id: int, text: str) -> None:
+async def send_card(bot, chat_id: int, item_id: int, text: str, lang: str = "en") -> None:
     await bot.send_message(
         chat_id=chat_id,
         text=text,
         parse_mode=ParseMode.HTML,
-        reply_markup=lesson_keyboard(item_id),
+        reply_markup=lesson_keyboard(item_id, lang=lang),
         link_preview_options=_PREVIEW_OFF,
     )
 
@@ -94,7 +105,7 @@ async def send_card(bot, chat_id: int, item_id: int, text: str) -> None:
 async def send_now(bot, plan: Plan, user: User, local_day: str) -> None:
     item_id, text = await create_item(db, user=user, plan=plan, local_day=local_day)
     try:
-        await send_card(bot, user.telegram_id, item_id, text)
+        await send_card(bot, user.telegram_id, item_id, text, normalize_ui(user.ui_language))
     except Exception:
         db.delete_item(item_id)
         raise
@@ -109,7 +120,7 @@ async def send_scheduled(bot, plan: Plan, user: User, slot: str, today: str, now
     logger.info("Sending %s card for plan %s (%s)", plan.content_type, plan.id, slot)
     try:
         item_id, text = await create_item(db, user=user, plan=plan, local_day=today)
-        await send_card(bot, user.telegram_id, item_id, text)
+        await send_card(bot, user.telegram_id, item_id, text, normalize_ui(user.ui_language))
         sent_to_user = True
         db.finish_delivery(plan.id, slot, today, item_id)
     except Forbidden:
@@ -134,20 +145,13 @@ async def send_scheduled(bot, plan: Plan, user: User, slot: str, today: str, now
             db.delete_item(item_id)
         db.release_delivery(plan.id, slot, today)
         if attempt in {1, 3}:
-            kind = "idiom" if plan.content_type == "idiom" else "word"
-            if attempt == 3:
-                notice = (
-                    f"I could not prepare today's {plan.language} {kind}. "
-                    "The next one will follow your plan."
-                )
-            else:
-                notice = (
-                    f"I could not prepare your {plan.language} {kind} just now. "
-                    "I will try again shortly."
-                )
-            user_message = getattr(exc, "user_message", None)
-            if attempt == 1 and user_message and "API key" in user_message:
-                notice = user_message
+            ui = normalize_ui(user.ui_language)
+            kind = t(ui, "idiom" if plan.content_type == "idiom" else "word")
+            language = language_label(ui, plan.language)
+            key = "fail_final" if attempt == 3 else "fail_retry"
+            notice = t(ui, key, language=language, kind=kind)
+            if attempt == 1 and getattr(exc, "code", "") == "api_key":
+                notice = exc.user_message
             try:
                 await bot.send_message(chat_id=user.telegram_id, text=notice)
             except Exception:

@@ -5,6 +5,8 @@ import random
 import re
 from datetime import datetime, time, timedelta
 
+from bot.i18n import localize, t
+
 
 def normalize_clock(text: str) -> str | None:
     raw = text.strip().lower().replace(".", ":").replace(" ", "")
@@ -111,37 +113,38 @@ RANDOM_WINDOWS = {
 }
 
 
-def day_phrase(weekdays: list[int]) -> str:
+def day_phrase(weekdays: list[int], lang: str = "en") -> str:
     chosen = sorted(set(weekdays))
     if chosen == WEEKDAYS:
-        return "Every day"
+        return t(lang, "every_day")
     if chosen == [0, 1, 2, 3, 4]:
-        return "Weekdays"
+        return t(lang, "weekdays")
     if chosen == [5, 6]:
-        return "Weekend"
-    return ", ".join(DAY_LABELS[day] for day in chosen)
+        return t(lang, "weekend_days")
+    separator = "، " if lang == "fa" else ", "
+    return separator.join(t(lang, f"wday.{day}") for day in chosen)
 
 
-def schedule_phrase(schedule: dict) -> str:
+def schedule_phrase(schedule: dict, lang: str = "en") -> str:
     slots = schedule.get("slots") or []
     parts = []
     for slot in slots:
         if slot.get("kind") == "random":
-            parts.append("random")
+            parts.append(t(lang, "random_short"))
         else:
             parts.append(str(slot.get("time") or ""))
     times = ", ".join(part for part in parts if part)
     count = len(slots)
-    lesson = "1 lesson a day" if count == 1 else f"{count} lessons a day"
-    return f"{day_phrase(schedule.get('weekdays') or [])} · {lesson} ({times})"
+    lesson = t(lang, "lessons_one") if count == 1 else t(lang, "lessons_many", n=count)
+    return localize(lang, f"{day_phrase(schedule.get('weekdays') or [], lang)} · {lesson} ({times})")
 
 
-def short_when(schedule: dict) -> str:
-    days = day_phrase(schedule.get("weekdays") or [])
+def short_when(schedule: dict, lang: str = "en") -> str:
+    chosen = sorted(set(schedule.get("weekdays") or []))
     count = len(schedule.get("slots") or [])
-    if days == "Every day":
-        return f"{count}× daily"
-    return f"{days} · {count}×"
+    if chosen == WEEKDAYS:
+        return t(lang, "times_daily", n=count)
+    return localize(lang, f"{day_phrase(chosen, lang)} · {count}×")
 
 
 def effective_schedule(plan) -> dict:

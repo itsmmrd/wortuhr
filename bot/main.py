@@ -9,6 +9,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 
 from bot import config
 from bot.db import db
+from bot.i18n import t
 from bot.handlers import (
     cancel_cmd,
     help_cmd,
@@ -38,17 +39,22 @@ async def _scheduler_loop(application: Application) -> None:
 
 async def post_init(application: Application) -> None:
     db.init()
+    commands = [
+        ("start", "cmd_start"),
+        ("new", "cmd_new"),
+        ("plans", "cmd_plans"),
+        ("progress", "cmd_progress"),
+        ("review", "cmd_review"),
+        ("settings", "cmd_settings"),
+        ("help", "cmd_help"),
+        ("cancel", "cmd_cancel"),
+    ]
     await application.bot.set_my_commands(
-        [
-            BotCommand("start", "Open Wortuhr"),
-            BotCommand("new", "Create a plan"),
-            BotCommand("plans", "Your plans"),
-            BotCommand("progress", "Learning progress"),
-            BotCommand("review", "Cards to repeat"),
-            BotCommand("settings", "Timezone and translation"),
-            BotCommand("help", "How this bot works"),
-            BotCommand("cancel", "Leave the current step"),
-        ]
+        [BotCommand(name, t("en", key)) for name, key in commands]
+    )
+    await application.bot.set_my_commands(
+        [BotCommand(name, t("fa", key)) for name, key in commands],
+        language_code="fa",
     )
     application.bot_data["scheduler"] = asyncio.create_task(_scheduler_loop(application))
 

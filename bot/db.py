@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL DEFAULT '',
     timezone TEXT NOT NULL DEFAULT 'Europe/Berlin',
     translation_language TEXT NOT NULL DEFAULT 'English',
+    ui_language TEXT,
     ready INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
@@ -85,6 +86,7 @@ class User:
     display_name: str
     timezone: str
     translation_language: str
+    ui_language: str | None
     ready: int
     created_at: str
 
@@ -154,6 +156,9 @@ class Database:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(plans)")}
             if "schedule_json" not in columns:
                 conn.execute("ALTER TABLE plans ADD COLUMN schedule_json TEXT")
+            user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+            if "ui_language" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN ui_language TEXT")
             conn.commit()
 
     def close(self) -> None:
@@ -213,6 +218,14 @@ class Database:
         with self._lock:
             self.connect().execute(
                 "UPDATE users SET translation_language = ? WHERE telegram_id = ?",
+                (language, telegram_id),
+            )
+            self.connect().commit()
+
+    def set_ui_language(self, telegram_id: int, language: str) -> None:
+        with self._lock:
+            self.connect().execute(
+                "UPDATE users SET ui_language = ? WHERE telegram_id = ?",
                 (language, telegram_id),
             )
             self.connect().commit()

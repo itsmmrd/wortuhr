@@ -14,6 +14,7 @@ from bot import config, llm
 from bot.constants import PAGE_SIZE, flag_for, language_name, topic_name
 from bot.db import User, db
 from bot.delivery import send_now
+from bot.i18n import UI_ASK, language_label, t, topic_label, translation_label, ui_label
 from bot.keyboards import (
     confirm_delete,
     content_types,
@@ -33,6 +34,7 @@ from bot.keyboards import (
     timezones,
     topics,
     translation_languages,
+    ui_language_keyboard,
 )
 from bot.render import (
     esc,
@@ -78,11 +80,31 @@ async def show(update: Update, text: str, markup) -> None:
         await message.reply_text(**kwargs)
 
 
+def _saved_user(update: Update) -> User:
+    user = db.get_user(update.effective_user.id)
+    if user is None:
+        raise RuntimeError("user missing after guard")
+    return user
+
+
+def ui_of(update: Update) -> str:
+    user = update.effective_user
+    if user is None:
+        return "en"
+    saved = db.get_user(user.id)
+    code = saved.ui_language if saved else None
+    return code if code in {"en", "fa"} else "en"
+
+
+def say(update: Update, key: str, **kwargs: object) -> str:
+    return t(ui_of(update), key, **kwargs)
+
+
 async def deny(update: Update) -> None:
     if update.callback_query:
-        await update.callback_query.answer("This bot is private.", show_alert=True)
+        await update.callback_query.answer("This bot is private.\nاین ربات خصوصی است.", show_alert=True)
     elif update.effective_message:
-        await update.effective_message.reply_text("This Wortuhr bot is private.")
+        await update.effective_message.reply_text("This Wortuhr bot is private.\nاین ربات وورتور خصوصی است.")
 
 
 async def guard(update: Update) -> bool:
@@ -101,60 +123,74 @@ async def guard(update: Update) -> bool:
     return True
 
 
-def _saved_user(update: Update) -> User:
-    user = db.get_user(update.effective_user.id)
-    if user is None:
-        raise RuntimeError("user missing after guard")
-    return user
+async def ask_ui_language(update: Update, context: ContextTypes.DEFAULT_TYPE, dest: str) -> None:
+    context.user_data["ui_dest"] = dest
+    await show(update, UI_ASK, ui_language_keyboard())
+
+
+async def apply_ui_language(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str) -> None:
+    user = _saved_user(update)
+    db.set_ui_language(user.telegram_id, code)
+    dest = str(context.user_data.pop("ui_dest", "home"))
+    user = _saved_user(update)
+    if dest == "settings" and user.ready:
+        await show_settings(update, context)
+        return
+    if not user.ready:
+        await begin_onboard(update, context)
+        return
+    await show_home(update, context)
 
 
 async def begin_onboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = _saved_user(update)
+    if user.ui_language not in {"en", "fa"}:
+        await ask_ui_language(update, context, "onboard")
+        return
     context.user_data["wizard"] = {"action": "onboard", "step": "timezone"}
-    await show(
-        update,
-        "<b>Wortuhr</b>\n\n"
-        "I send words and idioms on a schedule you choose, with practical examples and translations.\n\n"
-        "First, pick the timezone for those sending times.",
-        timezones(back="home"),
-    )
+    await show_step(update, context)
 
 
 async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE, notice: str = "") -> None:
     if notice:
         context.user_data["owner_notice"] = True
     user = db.get_user(update.effective_user.id)
-    if user is None or not user.ready:
+    if user is None or user.ui_language not in {"en", "fa"}:
+        await ask_ui_language(update, context, "home")
+        return
+    if not user.ready:
         await begin_onboard(update, context)
         return
     context.user_data.pop("wizard", None)
     prefix = ""
     if context.user_data.pop("owner_notice", False):
-        prefix = "You are the owner of this bot. Other Telegram accounts cannot use it.\n\n"
+        prefix = say(update, "owner_notice")
     stats = db.counts(user.telegram_id)
-    await show(update, prefix + home_html(user.display_name, stats), home_keyboard())
+    lang = user.ui_language
+    await show(update, prefix + home_html(user.display_name, stats, lang), home_keyboard(lang))
 
 
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("wizard", None)
     user = _saved_user(update)
-    text = (
-        "<b>Settings</b>\n\n"
-        f"Timezone: <code>{esc(user.timezone)}</code>\n"
-        f"Translations: {esc(user.translation_language)}\n\n"
-        "Cards use this timezone and this translation language."
+    lang = ui_of(update)
+    text = t(
+        lang,
+        "settings_body",
+        tz=esc(user.timezone),
+        tr=esc(translation_label(lang, user.translation_language)),
+        ui=esc(ui_label(lang)),
     )
-    await show(update, text, settings_menu())
+    await show(update, text, settings_menu(lang))
 
 
 async def show_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("wizard", None)
     user = _saved_user(update)
+    lang = ui_of(update)
     plans = db.list_plans(user.telegram_id)
-    if not plans:
-        text = "<b>My plans</b>\n\nYou have no plans yet. A plan is one schedule: language, level, topic, and time."
-    else:
-        text = "<b>My plans</b>\n\nOpen a plan to edit it, pause it, or delete it."
-    await show(update, text, plans_menu(plans))
+    text = say(update, "plans_open" if plans else "plans_empty")
+    await show(update, text, plans_menu(plans, lang))
 
 
 async def show_plan(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id: int) -> None:
@@ -164,71 +200,74 @@ async def show_plan(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id:
     if plan is None:
         await show_plans(update, context)
         return
-    await show(update, plan_html(plan, user_now(user)), plan_actions(plan))
+    lang = ui_of(update)
+    await show(update, plan_html(plan, user_now(user), lang), plan_actions(plan, lang))
 
 
 async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("wizard", None)
     user = _saved_user(update)
+    lang = ui_of(update)
     stats = db.counts(user.telegram_id)
     today = user_now(user).date()
     counts = db.activity_counts(user.telegram_id, (today - timedelta(days=6)).isoformat())
-    await show(update, progress_html(stats, counts, today), progress_menu())
+    await show(update, progress_html(stats, counts, today, lang), progress_menu(lang))
 
 
-def _list_query(kind: str) -> tuple[str, dict, str]:
+def _list_query(kind: str, lang: str) -> tuple[str, dict, str]:
     if kind == "words":
         return (
-            "Learned words",
+            t(lang, "learned_words"),
             {"content_type": "word", "status": "learned"},
-            "Words you mark with <b>I learned this</b> will collect here.",
+            t(lang, "empty_words"),
         )
     if kind == "idioms":
         return (
-            "Learned idioms",
+            t(lang, "learned_idioms"),
             {"content_type": "idiom", "status": "learned"},
-            "Idioms you mark with <b>I learned this</b> will collect here.",
+            t(lang, "empty_idioms"),
         )
     return (
-        "Needs repeat",
+        t(lang, "needs_repeat"),
         {"status": "repeat"},
-        "When a card arrives, tap <b>Repeat again</b> and it will collect here.",
+        t(lang, "empty_repeat"),
     )
 
 
 async def show_list(update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str, page: int) -> None:
     user = _saved_user(update)
-    title, filters, empty = _list_query(kind)
+    lang = ui_of(update)
+    title, filters, empty = _list_query(kind, lang)
     total = db.count_items(user.telegram_id, **filters)
     if total == 0:
-        await show(update, f"<b>{title}</b>\n\n{empty}", progress_menu())
+        await show(update, f"<b>{title}</b>\n\n{empty}", progress_menu(lang))
         return
     pages = max((total - 1) // PAGE_SIZE, 0)
     page = min(max(page, 0), pages)
     items = db.list_items(user.telegram_id, limit=PAGE_SIZE, offset=page * PAGE_SIZE, **filters)
     start = page * PAGE_SIZE + 1
     end = start + len(items) - 1
-    text = f"<b>{title}</b>\n\n{start}–{end} of {total}\nTap one to open the card."
-    await show(update, text, item_list(items, kind, page, total))
+    text = f"<b>{title}</b>\n\n{t(lang, 'list_range', start=start, end=end, total=total)}"
+    await show(update, text, item_list(items, kind, page, total, lang))
 
 
-def _lead(wizard: dict) -> str:
+def _lead(wizard: dict, lang: str) -> str:
     if wizard.get("action") != "create":
         return ""
-    lines = ["<b>New plan</b>"]
+    lines = [t(lang, "new_plan_title")]
     if wizard.get("language"):
-        lines.append(f"{flag_for(wizard['language'])} {esc(wizard['language'])}")
+        lines.append(f"{flag_for(wizard['language'])} {esc(language_label(lang, wizard['language']))}")
     if wizard.get("level"):
-        lines.append(f"Level {esc(wizard['level'])}")
+        lines.append(t(lang, "level_line", level=esc(wizard["level"])))
     if wizard.get("content_type"):
-        lines.append("Words" if wizard["content_type"] == "word" else "Idioms")
+        lines.append(t(lang, "words" if wizard["content_type"] == "word" else "idioms"))
     if wizard.get("topic"):
-        lines.append(esc(wizard["topic"]))
+        lines.append(esc(topic_label(lang, wizard["topic"])))
     if wizard.get("weekdays"):
-        lines.append(esc(day_phrase(wizard["weekdays"])))
+        lines.append(esc(day_phrase(wizard["weekdays"], lang)))
     if wizard.get("times_per_day"):
         count = int(wizard["times_per_day"])
-        lines.append("1 time a day" if count == 1 else f"{count} times a day")
+        lines.append(t(lang, "once_a_day") if count == 1 else t(lang, "times_a_day", n=count))
     return "\n".join(lines) + "\n\n"
 
 
@@ -266,72 +305,54 @@ async def show_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await show_home(update, context)
         return
     step = wizard.get("step")
-    lead = _lead(wizard)
+    lang = ui_of(update)
+    lead = _lead(wizard, lang)
     if step == "language":
-        await show(update, lead + "Which language do you want to learn?", languages())
+        await show(update, lead + say(update, "which_learn"), languages(lang))
     elif step == "level":
-        question = "Choose a new level." if wizard.get("action") == "edit" else "Which level, from A1 to C2?"
-        await show(update, lead + question, levels())
+        question = say(update, "new_level" if wizard.get("action") == "edit" else "which_level")
+        await show(update, lead + question, levels(lang))
     elif step == "type":
-        await show(update, lead + "Words or idioms?", content_types())
+        await show(update, lead + say(update, "words_or_idioms"), content_types(lang))
     elif step == "topic":
-        question = (
-            "Choose a new topic, or type your own."
-            if wizard.get("action") == "edit"
-            else "Choose a topic, or type your own. A job or a technical field is fine."
-        )
-        await show(update, lead + question, topics())
+        question = say(update, "new_topic" if wizard.get("action") == "edit" else "which_topic")
+        await show(update, lead + question, topics(lang))
     elif step == "days":
         selected = list(wizard.get("weekdays") or [])
         count = len(selected)
         if wizard.pop("need_day", None):
-            note = "Pick at least one day.\n"
+            note = say(update, "pick_day")
         elif count == 1:
-            note = "1 day selected.\n"
+            note = say(update, "days_one")
         elif count:
-            note = f"{count} days selected.\n"
+            note = say(update, "days_many", n=count)
         else:
             note = ""
-        await show(
-            update,
-            lead + note + "Which days of the week? Tap the days, then Done.",
-            days_keyboard(selected),
-        )
+        await show(update, lead + note + say(update, "which_days"), days_keyboard(selected, lang))
     elif step == "count":
-        await show(update, lead + "How many times a day?", times_per_day())
+        await show(update, lead + say(update, "how_many"), times_per_day(lang))
     elif step == "slot_kind":
         index = int(wizard.get("slot_index") or 0) + 1
         total = int(wizard.get("times_per_day") or 1)
-        await show(
-            update,
-            lead + f"Lesson {index} of {total}. Set a time, or I will pick a random time.",
-            slot_choice(),
-        )
+        await show(update, lead + say(update, "lesson_choice", i=index, n=total), slot_choice(lang))
     elif step == "slot_time":
         index = int(wizard.get("slot_index") or 0) + 1
-        await show(update, lead + f"Send the time for lesson {index}, for example 08:30.", text_step())
+        await show(update, lead + say(update, "send_clock", i=index), text_step(lang))
     elif step == "timezone":
         back = "home" if wizard.get("action") == "onboard" else "settings"
-        await show(update, "Choose the timezone for sending times.", timezones(back=back))
+        intro = say(update, "onboard_intro") if wizard.get("action") == "onboard" else say(update, "tz_prompt")
+        await show(update, intro, timezones(back=back, lang=lang))
     elif step == "translation":
         back = "w:back" if wizard.get("action") == "onboard" else "settings"
-        await show(
-            update,
-            "Which language should the translations use?",
-            translation_languages(back=back),
-        )
+        await show(update, say(update, "tr_prompt"), translation_languages(back=back, lang=lang))
     elif step == "custom_language":
-        await show(update, lead + "Type the language you want to learn. For example: Swedish.", text_step())
+        await show(update, lead + say(update, "type_language"), text_step(lang))
     elif step == "custom_topic":
-        await show(
-            update,
-            lead + "Type a topic, for example nursing, electrical engineering, or job interviews.",
-            text_step(),
-        )
+        await show(update, lead + say(update, "type_topic"), text_step(lang))
     elif step == "custom_timezone":
-        await show(update, "Send a timezone, for example Europe/Berlin or Tehran.", text_step())
+        await show(update, say(update, "tz_custom"), text_step(lang))
     elif step == "custom_translation":
-        await show(update, "Send the language for translations, for example Persian.", text_step())
+        await show(update, say(update, "tr_custom"), text_step(lang))
     else:
         await show_home(update, context)
 
@@ -442,6 +463,9 @@ async def _after_translation(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ready_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> User | None:
     user = _saved_user(update)
+    if user.ui_language not in {"en", "fa"}:
+        await ask_ui_language(update, context, "home" if user.ready else "onboard")
+        return None
     if not user.ready:
         await begin_onboard(update, context)
         return None
@@ -466,9 +490,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+    if not await guard(update) or await ready_user(update, context) is None:
         return
-    await show(update, help_html(), home_keyboard())
+    lang = ui_of(update)
+    await show(update, help_html(lang), home_keyboard(lang))
 
 
 async def new_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -502,7 +527,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
+    if not await guard(update) or await ready_user(update, context) is None:
         return
     context.user_data.pop("wizard", None)
     await show_home(update, context)
@@ -545,12 +570,12 @@ async def _on_mark(update: Update, item_id: int, status: str) -> None:
     user = _saved_user(update)
     if query is None or not db.set_item_status(item_id, user.telegram_id, status):
         if query:
-            await query.answer("That card is not in your saved list.", show_alert=True)
+            await query.answer(say(update, "not_in_list"), show_alert=True)
         return
-    label = "Marked as learned" if status == "learned" else "Saved to repeat"
+    label = say(update, "marked_learned" if status == "learned" else "marked_repeat")
     await query.answer(label)
     try:
-        await query.edit_message_reply_markup(reply_markup=lesson_keyboard(item_id, status))
+        await query.edit_message_reply_markup(reply_markup=lesson_keyboard(item_id, status, ui_of(update)))
     except BadRequest as exc:
         if "not modified" not in str(exc).lower():
             raise
@@ -560,25 +585,25 @@ async def _on_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_
     query = update.callback_query
     if query is None or query.message is None:
         return
-    await query.answer("Writing your card…")
+    await query.answer(say(update, "writing"))
     user = _saved_user(update)
     plan = db.get_plan(plan_id, user.telegram_id)
     if plan is None:
-        await query.message.reply_text("That plan is gone.")
+        await query.message.reply_text(say(update, "plan_gone"))
         return
-    placeholder = await query.message.reply_text("Writing your card…")
+    placeholder = await query.message.reply_text(say(update, "writing"))
     try:
         await send_now(context.bot, plan, user, user_now(user).date().isoformat())
     except Forbidden:
         db.pause_user_plans(user.telegram_id)
-        await placeholder.edit_text("Telegram refused the message, so I paused your plans.")
+        await placeholder.edit_text(say(update, "refused"))
         return
     except llm.LLMError as exc:
         await placeholder.edit_text(exc.user_message)
         return
     except Exception:
         logger.exception("send now failed")
-        await placeholder.edit_text("I could not send a card just now.")
+        await placeholder.edit_text(say(update, "no_card"))
         return
     try:
         await placeholder.delete()
@@ -593,11 +618,9 @@ async def _on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = _saved_user(update)
     items = db.learned_for_summary(user.telegram_id)
     if not items:
-        await query.message.reply_text(
-            "Mark a few cards with I learned this, then ask for a summary."
-        )
+        await query.message.reply_text(say(update, "summary_need"))
         return
-    placeholder = await query.message.reply_text("Writing your summary…")
+    placeholder = await query.message.reply_text(say(update, "summary_wait"))
     payload = [
         {
             "term": item.term,
@@ -609,16 +632,16 @@ async def _on_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         for item in items
     ]
     try:
-        text = await llm.summarize_learned(payload, user.translation_language)
+        text = await llm.summarize_learned(payload, user.translation_language, ui_of(update))
     except llm.LLMError as exc:
         await placeholder.edit_text(exc.user_message)
         return
     except Exception:
         logger.exception("summary failed")
-        await placeholder.edit_text("I could not write a summary just now.")
+        await placeholder.edit_text(say(update, "summary_fail"))
         return
     await placeholder.edit_text(
-        f"<b>What you have learned</b>\n\n{esc(text)}",
+        say(update, "summary_title", text=esc(text)),
         parse_mode=ParseMode.HTML,
     )
 
@@ -647,7 +670,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _on_send_now(update, context, plan_id)
             return
         await query.answer()
-        if not user.ready and data not in {"home", "w:back", "tz:custom", "tr:custom"} and not data.startswith(("tz:", "tr:")):
+        if data.startswith("ui:"):
+            code = data.split(":", 1)[1]
+            if code in {"en", "fa"}:
+                await apply_ui_language(update, context, code)
+            return
+        if user.ui_language not in {"en", "fa"}:
+            await ask_ui_language(update, context, "home" if user.ready else "onboard")
+            return
+        if not user.ready and data not in {"home", "w:back", "tz:custom", "tr:custom"} and not data.startswith(("tz:", "tr:", "ui:")):
             await begin_onboard(update, context)
             return
         await _route(update, context, data, user)
@@ -658,7 +689,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception:
             pass
         if query.message:
-            await query.message.reply_text("Something went wrong. Send /start to open the menu.")
+            await query.message.reply_text(say(update, "wrong"))
 
 
 async def _route(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, user: User) -> None:
@@ -666,7 +697,8 @@ async def _route(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, 
     if data == "home":
         await show_home(update, context)
     elif data == "help":
-        await show(update, help_html(), home_keyboard())
+        lang = ui_of(update)
+        await show(update, help_html(lang), home_keyboard(lang))
     elif data == "plans":
         await show_plans(update, context)
     elif data == "pnew":
@@ -677,6 +709,8 @@ async def _route(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, 
         await show_list(update, context, "repeat", 0)
     elif data == "settings":
         await show_settings(update, context)
+    elif data == "set:ui":
+        await ask_ui_language(update, context, "settings")
     elif data == "set:tz":
         context.user_data["wizard"] = {"action": "settings", "step": "timezone"}
         await show_step(update, context)
@@ -748,11 +782,9 @@ async def _route(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str, 
         if plan is None:
             await show_plans(update, context)
             return
-        text = (
-            plan_html(plan, user_now(user))
-            + "\n\nDelete this plan? Cards you already received stay in your progress."
-        )
-        await show(update, text, confirm_delete(plan_id))
+        lang = ui_of(update)
+        text = plan_html(plan, user_now(user), lang) + say(update, "delete_ask")
+        await show(update, text, confirm_delete(plan_id, lang))
     elif data.startswith("pedit:"):
         parts = data.split(":")
         if len(parts) != 3 or parts[1] not in {"level", "topic", "sched"}:
@@ -772,12 +804,13 @@ async def _open_item(update: Update, item_id: int | None) -> None:
         return
     item = db.get_item(item_id, update.effective_user.id)
     if item is None:
-        await query.message.reply_text("That card is no longer saved.")
+        await query.message.reply_text(say(update, "card_gone"))
         return
+    lang = ui_of(update)
     await query.message.reply_text(
-        lesson_from_item(item),
+        lesson_from_item(item, lang=lang),
         parse_mode=ParseMode.HTML,
-        reply_markup=lesson_keyboard(item.id, item.status),
+        reply_markup=lesson_keyboard(item.id, item.status, lang),
         link_preview_options=_PREVIEW_OFF,
     )
 
@@ -919,14 +952,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message is None:
         return
     if not wizard:
-        await message.reply_text("Use the menu, or send /start.")
+        user = _saved_user(update)
+        if user.ui_language not in {"en", "fa"}:
+            await ask_ui_language(update, context, "home" if user.ready else "onboard")
+            return
+        await message.reply_text(say(update, "use_menu"))
         return
     text = message.text.strip()
     step = wizard.get("step")
     user = _saved_user(update)
     if step == "custom_language":
         if not text or len(text) > 40:
-            await message.reply_text("Send a language name, up to 40 characters.")
+            await message.reply_text(say(update, "name_short"))
             return
         wizard["language"] = text
         wizard["step"] = "level"
@@ -934,7 +971,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if step == "custom_topic":
         if not text or len(text) > 80:
-            await message.reply_text("Send a topic, up to 80 characters.")
+            await message.reply_text(say(update, "topic_short"))
             return
         wizard["topic"] = text
         if wizard.get("action") == "edit":
@@ -947,14 +984,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if step == "custom_timezone":
         zone = resolve_timezone(text)
         if zone is None:
-            await message.reply_text("I don't know that timezone. Try Europe/Berlin or Asia/Tehran.")
+            await message.reply_text(say(update, "tz_unknown"))
             return
         db.set_timezone(user.telegram_id, zone)
         await _after_timezone(update, context)
         return
     if step == "custom_translation":
         if not text or len(text) > 40:
-            await message.reply_text("Send a language name, up to 40 characters.")
+            await message.reply_text(say(update, "name_short"))
             return
         db.set_translation_language(user.telegram_id, text)
         await _after_translation(update, context)
@@ -962,13 +999,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if step == "slot_time":
         clock = normalize_clock(text)
         if clock is None:
-            await message.reply_text("Use a time like 08:30.")
+            await message.reply_text(say(update, "time_bad"))
             return
         taken = [slot.get("time") for slot in wizard.get("slots") or [] if slot.get("kind") == "exact"]
         if clock in taken:
-            await message.reply_text("That time is already used. Send a different one.")
+            await message.reply_text(say(update, "time_taken"))
             return
         wizard.setdefault("slots", []).append({"kind": "exact", "time": clock})
         await _after_slot(update, context)
         return
-    await message.reply_text("Use the buttons below, or send /cancel.")
+    await message.reply_text(say(update, "use_menu"))
