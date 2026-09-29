@@ -27,7 +27,7 @@ After a card arrives, tap **I learned this** or **Repeat again**. Progress shows
 ## Install on Ubuntu
 
 ```bash
-git clone https://github.com/OWNER/wortuhr.git
+git clone https://github.com/itsmmrd/wortuhr.git
 cd wortuhr
 sudo ./install.sh
 ```
