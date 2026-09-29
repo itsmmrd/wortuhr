@@ -63,6 +63,14 @@ async def post_shutdown(application: Application) -> None:
             pass
 
 
+def ensure_event_loop() -> None:
+    """Python 3.14 no longer creates an event loop on get_event_loop()."""
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -90,4 +98,5 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(on_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     logger.info("Wortuhr is starting with Groq model %s", config.GROQ_MODEL)
+    ensure_event_loop()
     application.run_polling(drop_pending_updates=True)
