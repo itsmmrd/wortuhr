@@ -11,7 +11,7 @@ Wortuhr is a Telegram bot for German, English, and any other language you choose
 - Level: A1, A2, B1, B2, C1, or C2
 - Words or idioms
 - A topic such as everyday life, work, a technical field, or a job you type yourself
-- A schedule: one exact time, twice a day, or one random time inside a window you choose
+- A schedule: which days, how many times a day, and a clock time or a random time for each send
 - Edit, pause, or delete a plan
 - The timezone and the language used for translations
 

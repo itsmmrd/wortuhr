@@ -3,12 +3,17 @@ from __future__ import annotations
 import random
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from bot.schedule_logic import (
     choose_random_datetime,
     clock_span_minutes,
+    day_phrase,
+    effective_schedule,
+    finalize_schedule,
     normalize_clock,
+    prepare_due,
     roll_forward_random,
     slot_needs_send,
 )
@@ -97,6 +102,69 @@ class RandomScheduleTests(unittest.TestCase):
         self.assertIsNotNone(picked)
         assert picked is not None
         self.assertEqual(picked.date().isoformat(), "2026-09-30")
+
+
+class WeekScheduleTests(unittest.TestCase):
+    def test_day_phrases(self) -> None:
+        self.assertEqual(day_phrase(list(range(7))), "Every day")
+        self.assertEqual(day_phrase([0, 1, 2, 3, 4]), "Weekdays")
+        self.assertEqual(day_phrase([5, 6]), "Weekend")
+        self.assertEqual(day_phrase([0, 2, 4]), "Mon, Wed, Fri")
+
+    def test_random_bands_do_not_overlap(self) -> None:
+        now = datetime(2026, 9, 28, 7, 0, tzinfo=UTC)
+        schedule = finalize_schedule(
+            now,
+            [0, 2, 4],
+            [{"kind": "random"}, {"kind": "exact", "time": "07:15"}, {"kind": "random"}],
+            random.Random(1),
+        )
+        self.assertEqual(schedule["slots"][0]["start"], "08:00")
+        self.assertEqual(schedule["slots"][0]["end"], "12:30")
+        self.assertEqual(schedule["slots"][2]["start"], "13:30")
+        self.assertEqual(schedule["slots"][2]["end"], "21:00")
+        self.assertEqual(schedule["slots"][1]["time"], "07:15")
+
+    def test_exact_slot_is_not_due_on_an_unselected_day(self) -> None:
+        sunday = datetime(2026, 9, 27, 8, 10, tzinfo=UTC)
+        schedule = {"weekdays": [0, 1, 2, 3, 4], "slots": [{"kind": "exact", "time": "08:00"}]}
+        _updated, due, changed = prepare_due(sunday, schedule, {})
+        self.assertEqual(due, [])
+        self.assertFalse(changed)
+
+        monday = datetime(2026, 9, 28, 8, 10, tzinfo=UTC)
+        _updated, due, _changed = prepare_due(monday, schedule, {})
+        self.assertEqual([name for name, _when in due], ["s0"])
+
+    def test_sent_random_moves_to_the_next_selected_day(self) -> None:
+        monday = datetime(2026, 9, 28, 10, 0, tzinfo=UTC)
+        schedule = {
+            "weekdays": [0],
+            "slots": [{"kind": "random", "start": "08:00", "end": "21:00", "next": "2026-09-28T09:00+00:00"}],
+        }
+        updated, due, changed = prepare_due(monday, schedule, {"s0": ("sent", 1)}, rng=random.Random(0))
+        self.assertTrue(changed)
+        self.assertEqual(due, [])
+        nxt = datetime.fromisoformat(updated["slots"][0]["next"])
+        self.assertEqual(nxt.weekday(), 0)
+        self.assertGreater(nxt.date(), monday.date())
+
+    def test_legacy_plan_keeps_its_slot_names(self) -> None:
+        plan = SimpleNamespace(
+            schedule_json=None,
+            schedule_mode="twice",
+            time_1="08:00",
+            time_2="20:00",
+            window_start=None,
+            window_end=None,
+            next_random_at=None,
+        )
+        schedule = effective_schedule(plan)
+        self.assertEqual(schedule["legacy_slots"], ["time_1", "time_2"])
+        self.assertEqual(schedule["weekdays"], list(range(7)))
+        now = datetime(2026, 9, 29, 8, 5, tzinfo=UTC)
+        _updated, due, _changed = prepare_due(now, schedule, {})
+        self.assertEqual([name for name, _when in due], ["time_1"])
 
 
 if __name__ == "__main__":

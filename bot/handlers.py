@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,6 +17,7 @@ from bot.delivery import send_now
 from bot.keyboards import (
     confirm_delete,
     content_types,
+    days_keyboard,
     home as home_keyboard,
     item_list,
     languages,
@@ -24,9 +26,10 @@ from bot.keyboards import (
     plan_actions,
     plans_menu,
     progress_menu,
-    schedule_modes,
     settings_menu,
+    slot_choice,
     text_step,
+    times_per_day,
     timezones,
     topics,
     translation_languages,
@@ -39,7 +42,7 @@ from bot.render import (
     plan_html,
     progress_html,
 )
-from bot.schedule_logic import choose_random_datetime, clock_span_minutes, normalize_clock
+from bot.schedule_logic import day_phrase, finalize_schedule, normalize_clock
 from bot.timezones import resolve_timezone
 
 logger = logging.getLogger(__name__)
@@ -221,19 +224,18 @@ def _lead(wizard: dict) -> str:
         lines.append("Words" if wizard["content_type"] == "word" else "Idioms")
     if wizard.get("topic"):
         lines.append(esc(wizard["topic"]))
-    if wizard.get("schedule_mode") == "exact" and wizard.get("time_1"):
-        lines.append(f"Every day at {esc(wizard['time_1'])}")
-    elif wizard.get("schedule_mode") == "twice" and wizard.get("time_1"):
-        lines.append(f"First time {esc(wizard['time_1'])}")
-    elif wizard.get("schedule_mode") == "random" and wizard.get("window_start"):
-        lines.append(f"Window from {esc(wizard['window_start'])}")
+    if wizard.get("weekdays"):
+        lines.append(esc(day_phrase(wizard["weekdays"])))
+    if wizard.get("times_per_day"):
+        count = int(wizard["times_per_day"])
+        lines.append("1 time a day" if count == 1 else f"{count} times a day")
     return "\n".join(lines) + "\n\n"
 
 
 def _previous_step(wizard: dict) -> str:
     step = wizard.get("step")
     action = wizard.get("action")
-    if action == "edit" and step in {"level", "topic", "mode"}:
+    if action == "edit" and step in {"level", "topic", "days"}:
         return "plan"
     if action == "settings" and step in {"timezone", "translation", "custom_timezone", "custom_translation"}:
         return "settings"
@@ -248,13 +250,12 @@ def _previous_step(wizard: dict) -> str:
         "level": "language",
         "type": "level",
         "topic": "type",
-        "mode": "topic",
+        "days": "topic",
+        "count": "days",
+        "slot_kind": "count",
+        "slot_time": "count",
         "custom_language": "language",
         "custom_topic": "topic",
-        "time_1": "mode",
-        "time_2": "time_1",
-        "window_start": "mode",
-        "window_end": "window_start",
     }
     return mapping.get(step, "home")
 
@@ -280,12 +281,35 @@ async def show_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             else "Choose a topic, or type your own. A job or a technical field is fine."
         )
         await show(update, lead + question, topics())
-    elif step == "mode":
+    elif step == "days":
+        selected = list(wizard.get("weekdays") or [])
+        count = len(selected)
+        if wizard.pop("need_day", None):
+            note = "Pick at least one day.\n"
+        elif count == 1:
+            note = "1 day selected.\n"
+        elif count:
+            note = f"{count} days selected.\n"
+        else:
+            note = ""
         await show(
             update,
-            lead + "When should I send it?\nExact time, twice a day, or a random time inside a window.",
-            schedule_modes(),
+            lead + note + "Which days of the week? Tap the days, then Done.",
+            days_keyboard(selected),
         )
+    elif step == "count":
+        await show(update, lead + "How many times a day?", times_per_day())
+    elif step == "slot_kind":
+        index = int(wizard.get("slot_index") or 0) + 1
+        total = int(wizard.get("times_per_day") or 1)
+        await show(
+            update,
+            lead + f"Lesson {index} of {total}. Set a time, or I will pick a random time.",
+            slot_choice(),
+        )
+    elif step == "slot_time":
+        index = int(wizard.get("slot_index") or 0) + 1
+        await show(update, lead + f"Send the time for lesson {index}, for example 08:30.", text_step())
     elif step == "timezone":
         back = "home" if wizard.get("action") == "onboard" else "settings"
         await show(update, "Choose the timezone for sending times.", timezones(back=back))
@@ -295,20 +319,6 @@ async def show_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             update,
             "Which language should the translations use?",
             translation_languages(back=back),
-        )
-    elif step == "time_1" and wizard.get("schedule_mode") == "twice":
-        await show(update, lead + "Send the first time, for example 08:00.", text_step())
-    elif step == "time_1":
-        await show(update, lead + "Send the time in 24-hour form, for example 08:30.", text_step())
-    elif step == "time_2":
-        await show(update, lead + "Send the second time, for example 20:00.", text_step())
-    elif step == "window_start":
-        await show(update, lead + "Send the start of the random window, for example 09:00.", text_step())
-    elif step == "window_end":
-        await show(
-            update,
-            lead + "Send the end of the window, for example 18:00. Leave at least 30 minutes.",
-            text_step(),
         )
     elif step == "custom_language":
         await show(update, lead + "Type the language you want to learn. For example: Swedish.", text_step())
@@ -337,7 +347,7 @@ async def begin_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id
     if plan is None:
         await show_plans(update, context)
         return
-    step = {"level": "level", "topic": "topic", "sched": "mode"}[edit]
+    step = {"level": "level", "topic": "topic", "sched": "days"}[edit]
     context.user_data["wizard"] = {
         "action": "edit",
         "edit": edit,
@@ -347,25 +357,43 @@ async def begin_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id
         "level": plan.level,
         "content_type": plan.content_type,
         "topic": plan.topic,
-        "schedule_mode": plan.schedule_mode,
+        "weekdays": [],
+        "slots": [],
+        "slot_index": 0,
     }
     await show_step(update, context)
 
 
+def _begin_days(wizard: dict) -> None:
+    wizard["step"] = "days"
+    wizard["weekdays"] = []
+    wizard["slots"] = []
+    wizard["slot_index"] = 0
+    wizard.pop("times_per_day", None)
+
+
 def _schedule_fields(wizard: dict, user: User) -> dict:
-    mode = wizard["schedule_mode"]
-    fields = {
-        "schedule_mode": mode,
-        "time_1": wizard.get("time_1") if mode in {"exact", "twice"} else None,
-        "time_2": wizard.get("time_2") if mode == "twice" else None,
-        "window_start": wizard.get("window_start") if mode == "random" else None,
-        "window_end": wizard.get("window_end") if mode == "random" else None,
-        "next_random_at": None,
+    schedule = finalize_schedule(user_now(user), wizard["weekdays"], wizard["slots"])
+    first = schedule["slots"][0]
+    return {
+        "schedule_mode": "custom",
+        "schedule_json": json.dumps(schedule),
+        "time_1": first.get("time") if first.get("kind") == "exact" else None,
+        "time_2": None,
+        "window_start": first.get("start") if first.get("kind") == "random" else None,
+        "window_end": first.get("end") if first.get("kind") == "random" else None,
+        "next_random_at": first.get("next") if first.get("kind") == "random" else None,
     }
-    if mode == "random":
-        nxt = choose_random_datetime(user_now(user), fields["window_start"], fields["window_end"])
-        fields["next_random_at"] = nxt.isoformat(timespec="minutes")
-    return fields
+
+
+async def _after_slot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    wizard = context.user_data["wizard"]
+    wizard["slot_index"] = len(wizard.get("slots") or [])
+    if wizard["slot_index"] >= int(wizard.get("times_per_day") or 1):
+        await finish_schedule(update, context)
+        return
+    wizard["step"] = "slot_kind"
+    await show_step(update, context)
 
 
 async def finish_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -505,6 +533,9 @@ async def _go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif target == "settings":
         await show_settings(update, context)
     else:
+        if wizard.get("step") in {"slot_kind", "slot_time"} and target == "count":
+            wizard["slots"] = []
+            wizard["slot_index"] = 0
         wizard["step"] = target
         await show_step(update, context)
 
@@ -815,20 +846,67 @@ async def _on_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE, data: s
             db.update_plan(int(wizard["plan_id"]), _saved_user(update).telegram_id, topic=name)
             await show_plan(update, context, int(wizard["plan_id"]))
             return
-        wizard["step"] = "mode"
+        _begin_days(wizard)
         await show_step(update, context)
-    elif kind == "mode":
-        mode = parts[2] if len(parts) > 2 else ""
-        if mode not in {"exact", "twice", "random"}:
+    elif kind == "day":
+        if wizard.get("step") != "days":
             await show_step(update, context)
             return
-        wizard["schedule_mode"] = mode
-        wizard["time_1"] = None
-        wizard["time_2"] = None
-        wizard["window_start"] = None
-        wizard["window_end"] = None
-        wizard["step"] = "window_start" if mode == "random" else "time_1"
+        choice = parts[2] if len(parts) > 2 else ""
+        selected = set(wizard.get("weekdays") or [])
+        if choice == "all":
+            selected = set(range(7))
+        elif choice == "week":
+            selected = {0, 1, 2, 3, 4}
+        elif choice == "end":
+            selected = {5, 6}
+        elif choice == "done":
+            if not selected:
+                wizard["need_day"] = True
+                await show_step(update, context)
+                return
+            wizard["weekdays"] = sorted(selected)
+            wizard["step"] = "count"
+            await show_step(update, context)
+            return
+        elif choice.isdigit() and int(choice) in range(7):
+            day = int(choice)
+            if day in selected:
+                selected.remove(day)
+            else:
+                selected.add(day)
+        else:
+            await show_step(update, context)
+            return
+        wizard["weekdays"] = sorted(selected)
         await show_step(update, context)
+    elif kind == "count":
+        if wizard.get("step") != "count":
+            await show_step(update, context)
+            return
+        raw = parts[2] if len(parts) > 2 else ""
+        if raw not in {"1", "2", "3"}:
+            await show_step(update, context)
+            return
+        wizard["times_per_day"] = int(raw)
+        wizard["slots"] = []
+        wizard["slot_index"] = 0
+        wizard["step"] = "slot_kind"
+        await show_step(update, context)
+    elif kind == "slot":
+        if wizard.get("step") != "slot_kind":
+            await show_step(update, context)
+            return
+        choice = parts[2] if len(parts) > 2 else ""
+        if choice == "exact":
+            wizard["step"] = "slot_time"
+            await show_step(update, context)
+            return
+        if choice != "random":
+            await show_step(update, context)
+            return
+        wizard.setdefault("slots", []).append({"kind": "random"})
+        await _after_slot(update, context)
     else:
         await show_step(update, context)
 
@@ -863,7 +941,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             db.update_plan(int(wizard["plan_id"]), user.telegram_id, topic=text)
             await show_plan(update, context, int(wizard["plan_id"]))
             return
-        wizard["step"] = "mode"
+        _begin_days(wizard)
         await show_step(update, context)
         return
     if step == "custom_timezone":
@@ -881,38 +959,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         db.set_translation_language(user.telegram_id, text)
         await _after_translation(update, context)
         return
-    if step in {"time_1", "time_2", "window_start", "window_end"}:
+    if step == "slot_time":
         clock = normalize_clock(text)
         if clock is None:
             await message.reply_text("Use a time like 08:30.")
             return
-        if step == "time_2" and clock == wizard.get("time_1"):
-            await message.reply_text("Choose a different second time.")
+        taken = [slot.get("time") for slot in wizard.get("slots") or [] if slot.get("kind") == "exact"]
+        if clock in taken:
+            await message.reply_text("That time is already used. Send a different one.")
             return
-        if step == "window_end":
-            start = wizard.get("window_start")
-            if not start or clock_span_minutes(start, clock) < 30:
-                await message.reply_text("The window needs at least 30 minutes, and the end must be later.")
-                return
-        wizard[step if step != "window_end" else "window_end"] = clock
-        if step == "time_1":
-            wizard["time_1"] = clock
-            if wizard.get("schedule_mode") == "twice":
-                wizard["step"] = "time_2"
-                await show_step(update, context)
-                return
-            await finish_schedule(update, context)
-            return
-        if step == "time_2":
-            wizard["time_2"] = clock
-            await finish_schedule(update, context)
-            return
-        if step == "window_start":
-            wizard["window_start"] = clock
-            wizard["step"] = "window_end"
-            await show_step(update, context)
-            return
-        wizard["window_end"] = clock
-        await finish_schedule(update, context)
+        wizard.setdefault("slots", []).append({"kind": "exact", "time": clock})
+        await _after_slot(update, context)
         return
     await message.reply_text("Use the buttons below, or send /cancel.")

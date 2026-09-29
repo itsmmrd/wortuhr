@@ -11,6 +11,7 @@ from bot.constants import (
     TRANSLATION_LANGUAGES,
 )
 from bot.db import Item, Plan
+from bot.schedule_logic import DAY_LABELS, effective_schedule, short_when
 
 
 def _grid(buttons: list[InlineKeyboardButton], per_row: int) -> list[list[InlineKeyboardButton]]:
@@ -82,11 +83,37 @@ def topics() -> InlineKeyboardMarkup:
     return with_nav(_grid(buttons, 2), back="w:back")
 
 
-def schedule_modes() -> InlineKeyboardMarkup:
+def days_keyboard(selected: list[int]) -> InlineKeyboardMarkup:
+    chosen = set(selected)
+    buttons = [
+        InlineKeyboardButton(("✓ " if index in chosen else "") + DAY_LABELS[index], callback_data=f"w:day:{index}")
+        for index in range(7)
+    ]
+    rows = _grid(buttons, 4)
+    rows.append(
+        [
+            InlineKeyboardButton("Every day", callback_data="w:day:all"),
+            InlineKeyboardButton("Weekdays", callback_data="w:day:week"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton("Weekend", callback_data="w:day:end"),
+            InlineKeyboardButton("Done", callback_data="w:day:done"),
+        ]
+    )
+    return with_nav(rows, back="w:back")
+
+
+def times_per_day() -> InlineKeyboardMarkup:
+    buttons = [InlineKeyboardButton(str(count), callback_data=f"w:count:{count}") for count in (1, 2, 3)]
+    return with_nav([buttons], back="w:back")
+
+
+def slot_choice() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("Exact time", callback_data="w:mode:exact")],
-        [InlineKeyboardButton("Twice a day", callback_data="w:mode:twice")],
-        [InlineKeyboardButton("Random time", callback_data="w:mode:random")],
+        [InlineKeyboardButton("Set a time", callback_data="w:slot:exact")],
+        [InlineKeyboardButton("Pick a random time", callback_data="w:slot:random")],
     ]
     return with_nav(rows, back="w:back")
 
@@ -128,12 +155,7 @@ def settings_menu() -> InlineKeyboardMarkup:
 
 def plan_button_label(plan: Plan) -> str:
     kind = "words" if plan.content_type == "word" else "idioms"
-    if plan.schedule_mode == "exact":
-        when = plan.time_1 or ""
-    elif plan.schedule_mode == "twice":
-        when = f"{plan.time_1}/{plan.time_2}"
-    else:
-        when = "random"
+    when = short_when(effective_schedule(plan))
     paused = " · paused" if not plan.active else ""
     return f"{plan.language} {plan.level} {kind} · {when}{paused}"[:60]
 

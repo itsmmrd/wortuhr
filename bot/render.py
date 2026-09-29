@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from bot.constants import flag_for
 from bot.db import Item, Plan
+from bot.schedule_logic import effective_schedule, schedule_phrase
 
 
 def esc(value: object) -> str:
@@ -31,11 +32,7 @@ def activity_block(counts: dict[str, int], today: date) -> str:
 
 
 def schedule_label(plan: Plan) -> str:
-    if plan.schedule_mode == "exact":
-        return f"Every day at {plan.time_1}"
-    if plan.schedule_mode == "twice":
-        return f"Twice a day, at {plan.time_1} and {plan.time_2}"
-    return f"Random time between {plan.window_start} and {plan.window_end}"
+    return schedule_phrase(effective_schedule(plan))
 
 
 def _when_phrase(now: datetime, target: datetime) -> str:
@@ -50,14 +47,21 @@ def plan_html(plan: Plan, now: datetime) -> str:
     kind = "words" if plan.content_type == "word" else "idioms"
     flag = flag_for(plan.language)
     status = "active" if plan.active else "paused"
+    schedule = effective_schedule(plan)
     lines = [
         f"{flag} <b>{esc(plan.language)} {esc(kind)}</b>",
         f"Level {esc(plan.level)} · {esc(plan.topic)}",
-        esc(schedule_label(plan)),
+        esc(schedule_phrase(schedule)),
     ]
-    if plan.schedule_mode == "random" and plan.next_random_at:
-        target = datetime.fromisoformat(plan.next_random_at)
-        lines.append(f"Next send: {esc(_when_phrase(now, target))}")
+    upcoming = []
+    for slot in schedule.get("slots") or []:
+        if slot.get("kind") == "random" and slot.get("next"):
+            target = datetime.fromisoformat(slot["next"])
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=now.tzinfo)
+            upcoming.append(target)
+    if upcoming:
+        lines.append(f"Next random send: {esc(_when_phrase(now, min(upcoming)))}")
     lines.append(f"Status: {status}")
     return "\n".join(lines)
 
@@ -151,7 +155,7 @@ def help_html() -> str:
             "A topic can be everyday life, a job, a technical field, or anything you type.",
             "",
             "<b>When cards arrive</b>",
-            "Once a day at a time you choose, twice a day, or once at a random time inside a window.",
+            "Choose the days, how many times a day, then a clock time or a random time for each one.",
             "A word card has the word, its translation, and 3 short practical sentences.",
             "An idiom card has the idiom, its meaning, and 3 situations where you can use it.",
             "",

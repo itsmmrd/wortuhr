@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import random
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram import LinkPreviewOptions
 from telegram.constants import ParseMode
@@ -14,7 +13,6 @@ from bot import llm
 from bot.db import Database, Plan, User, db
 from bot.keyboards import lesson as lesson_keyboard
 from bot.render import lesson_html, schedule_label
-from bot.schedule_logic import choose_on_date
 
 logger = logging.getLogger(__name__)
 _locks: dict[int, asyncio.Lock] = {}
@@ -102,14 +100,6 @@ async def send_now(bot, plan: Plan, user: User, local_day: str) -> None:
         raise
 
 
-def _schedule_next_random(plan: Plan, now: datetime) -> None:
-    if not plan.window_start or not plan.window_end:
-        return
-    tomorrow = now.date() + timedelta(days=1)
-    nxt = choose_on_date(tomorrow, now.tzinfo, plan.window_start, plan.window_end, random.Random())
-    db.update_plan(plan.id, next_random_at=nxt.isoformat(timespec="minutes"))
-
-
 async def send_scheduled(bot, plan: Plan, user: User, slot: str, today: str, now: datetime) -> None:
     attempt = db.claim_delivery(plan.id, slot, today)
     if attempt is None:
@@ -122,8 +112,6 @@ async def send_scheduled(bot, plan: Plan, user: User, slot: str, today: str, now
         await send_card(bot, user.telegram_id, item_id, text)
         sent_to_user = True
         db.finish_delivery(plan.id, slot, today, item_id)
-        if plan.schedule_mode == "random":
-            _schedule_next_random(plan, now)
     except Forbidden:
         logger.info("User %s blocked the bot. Pausing plans.", user.telegram_id)
         if sent_to_user:

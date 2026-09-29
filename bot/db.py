@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS plans (
     window_start TEXT,
     window_end TEXT,
     next_random_at TEXT,
+    schedule_json TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
@@ -102,6 +103,7 @@ class Plan:
     window_start: str | None
     window_end: str | None
     next_random_at: str | None
+    schedule_json: str | None
     active: int
     created_at: str
 
@@ -149,6 +151,9 @@ class Database:
         with self._lock:
             conn = self.connect()
             conn.executescript(SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(plans)")}
+            if "schedule_json" not in columns:
+                conn.execute("ALTER TABLE plans ADD COLUMN schedule_json TEXT")
             conn.commit()
 
     def close(self) -> None:
@@ -234,6 +239,7 @@ class Database:
             "window_start",
             "window_end",
             "next_random_at",
+            "schedule_json",
             "active",
             "created_at",
         ]
@@ -264,6 +270,7 @@ class Database:
             "window_start",
             "window_end",
             "next_random_at",
+            "schedule_json",
             "active",
         }
         pairs = [(key, value) for key, value in fields.items() if key in allowed]
